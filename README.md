@@ -14,6 +14,7 @@ An Android 1:1 remake of the classic Winamp 2.x player: real base-skin bitmaps, 
 - 10 段均衡器 + 前级放大（Preamp）
 - 播放列表：ADD / REM / SEL / MISC、LIST OPTS、已选时长/总时长显示
 - 首次打开自动播放内置默认歌曲（`assets/wenroutaozi_Llama.wav`）
+  - **致敬彩蛋**：由豆包合成——角色「温柔桃子」以摇滚情绪演绎 Winamp 经典开场白（"Winamp, it really whips the llama's ass!"），首次打开自动播放
 - 定制应用图标与应用名
 
 ## 开发笔记 Dev Notes
