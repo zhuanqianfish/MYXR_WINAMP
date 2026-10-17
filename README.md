@@ -42,6 +42,13 @@
 
 > **关于均衡器**：Android 自带的 `audiofx.Equalizer` 在多数机型只有 5 段、频点由厂商决定，且可能被硬件 offload 绕过。所以本项目不用它——`PcmAudioEngine` 自己解码 PCM、自己跑 10 个 RBJ peaking 滤波器，频点和段数完全可控，前级也是滤波器链里的真增益。
 
+<p align="center">
+  <img src="eq-response.png" width="700" alt="10 段均衡器实测频响">
+  <br>
+  <sub>左：6 组预设的实际响应　·　右：每段单独 +12 dB</sub>
+</p>
+
+
 ## 构建
 
 无 Gradle，纯手工链路：`aapt2 → javac → d8 → zipalign → apksigner`（与 `BUILD.md` 一致）。
@@ -123,7 +130,8 @@ MYXR_WINAMP/
 │   └── WinampClassic.apk           # 构建产物
 ├── BUILD.md                        # 手工构建链路说明
 ├── SPEC.md / SPEC_V2.md            # 设计与还原规格
-├── screenshot.jpg
+├── screenshot.jpg                  # 真机截图
+├── eq-response.png                 # 10 段均衡器实测频响
 └── logo.png
 ```
 
@@ -135,6 +143,16 @@ MYXR_WINAMP/
 - 覆盖安装必须使用同一张证书；本项目使用 debug keystore（storepass / keypass 均为 `android`）
 - 皮肤渲染统一走整数倍缩放 `S` 并关闭位图滤波，保证像素锐利
 - 播放链路自研（`PcmAudioEngine`），不经 `MediaPlayer` / 系统 `Equalizer`；频谱与均衡器共用同一份 PCM
+
+## 版本说明
+
+版本号从 **v0.1 直接跳到 v0.7**，中间没有 0.2–0.6。
+
+这几个版本号本来对应几次重做尝试，但它们都让 AI 做崩了：改一处坏一处 —— 滑杆不显示、播放列表错位、均衡器干脆不出声，没有一个能出包。
+
+最后是 **DeepSeek-v4.1-Flash 1017** 把这几件事一起收掉的：先拿皮肤位图把每个窗口的坐标逐像素核对，再把播放链路整个重写成自研 DSP，才有了这版能在真机上跑通的构建。
+
+所以 v0.7 不是"跳了五个小版本"，而是"0.2–0.6 全部作废，这是第一个真正能用的版本"。
 
 ## License
 
