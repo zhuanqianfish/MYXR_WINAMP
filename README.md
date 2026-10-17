@@ -11,7 +11,7 @@ An Android 1:1 remake of the classic Winamp 2.x player: real base-skin bitmaps, 
 - 像素级还原 Winamp base skin（真实皮肤位图，整数倍缩放、无滤波，保持像素锐利）
 - 左上角频谱分析仪：柱状频谱 / 折线示波器 / 关闭，点击循环切换
   - 本地 PCM 解码 + 自研 FFT，不依赖系统 `Visualizer`（绕开各家 ROM 的音频链路坑）
-- 10 段均衡器 + 前级放大（Preamp）
+- 10 段均衡器 + 前级放大（Preamp）：自研 DSP（PCM 解码 → 10 个 biquad → AudioTrack），频点固定 60/170/310/600/1k/3k/6k/12k/14k/16k，不依赖机型自带的 5 段 Equalizer
 - 播放列表：ADD / REM / SEL / MISC、LIST OPTS、已选时长/总时长显示
 - 首次打开自动播放内置默认歌曲（`assets/wenroutaozi_Llama.wav`）
   - **致敬彩蛋**：由豆包合成——角色「温柔桃子」以摇滚情绪演绎 Winamp 经典开场白（"Winamp, it really whips the llama's ass!"），首次打开自动播放
@@ -20,6 +20,7 @@ An Android 1:1 remake of the classic Winamp 2.x player: real base-skin bitmaps, 
 ## 开发笔记 Dev Notes
 
 - 无 Gradle，纯手工构建链：`aapt2 → javac → d8 → zipalign → apksigner`（详见 `BUILD.md`）
+- 播放链路自研：PcmAudioEngine（MediaExtractor → MediaCodec → 10 段 biquad → AudioTrack），不经 MediaPlayer / 系统 Equalizer；频谱也从同一份 PCM 计算
 - 包名 `com.dalang.winamp`，minSdk 26 / targetSdk 35
 - 调试签名（`~/.android/debug.keystore`），覆盖安装必须使用同一证书
 - `versionCode` / `versionName` 必须同时设置：MIUI / HyperOS 会拒装空版本号的 APK（"解析软件包出现问题"）
@@ -55,7 +56,7 @@ $AAPT2 compile --dir res -o build/compiled.zip
 $AAPT2 link -o build/app-unsigned.apk \
   --manifest AndroidManifest.xml \
   -I $ANDROID_JAR \
-  --version-code 5 --version-name 2.1 \
+  --version-code 12 --version-name 0.7 \
   -A assets \
   --java build/gen \
   build/compiled.zip

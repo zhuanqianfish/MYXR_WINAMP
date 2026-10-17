@@ -61,6 +61,18 @@ public class MainWindowView extends FrameLayout {
     // kbps/khz/声道
     private final MetaCtl metaCtl = new MetaCtl();
 
+    // 音量/平衡滑杆几何（逻辑像素，坐标取自 Webamp css/main-window.css）
+    // 背景：volume.bmp / balance.bmp 的 28 帧 68x15 精灵表（frame = round(v*27)）；
+    // 推子：同一张图尾部 14x11（y=422）：x=15 为常态，x=0 为按下态。
+    private static final int VOL_X = 107, VOL_Y = 57, VOL_W = 68;
+    private static final int BAL_X = 177, BAL_Y = 57, BAL_SRC_X = 9, BAL_W = 38;
+    private static final int SLIDER_H = 15;
+    private static final int THUMB_W = 14, THUMB_H = 11, THUMB_Y = 422;
+    private static final int THUMB_X_NORMAL = 15, THUMB_X_PRESSED = 0;
+    /** 推子行程：音量滑槽 65px（Webamp 的 range 输入比 68px 背景窄 3px），平衡 38px */
+    private static final int VOL_TRAVEL = VOL_W - 3 - THUMB_W; // 51
+    private static final int BAL_TRAVEL = BAL_W - THUMB_W;     // 24
+
     // 子控件
     private SkinTimeView timeView;
     private PosbarSlider seekSlider;
@@ -181,14 +193,20 @@ public class MainWindowView extends FrameLayout {
         btnEqWin = mkBtn(context, s, "shufrep",
                 new int[]{0, 61, 23, 12}, new int[]{46, 61, 23, 12},
                 new int[]{0, 73, 23, 12}, new int[]{46, 73, 23, 12}, 219, 58);
+        // EQ / PL 是窗口开关：selected 帧左上角的圆点会亮绿（和 SHUFFLE 同一套逻辑）。
+        // 之前没开 toggle、也没同步 active，所以永远停在常态帧 → 一直是深绿。
+        btnEqWin.setToggle(true);
+        btnEqWin.setActive(true);   // 两个窗口启动时都是打开的
         btnEqWin.setChainClick(new Runnable() {
-            @Override public void run() { toggleSibling(EqWindowView.class); }
+            @Override public void run() { toggleSibling(EqWindowView.class, btnEqWin); }
         });
         btnPlWin = mkBtn(context, s, "shufrep",
                 new int[]{23, 61, 23, 12}, new int[]{69, 61, 23, 12},
                 new int[]{23, 73, 23, 12}, new int[]{69, 73, 23, 12}, 242, 58);
+        btnPlWin.setToggle(true);
+        btnPlWin.setActive(true);
         btnPlWin.setChainClick(new Runnable() {
-            @Override public void run() { toggleSibling(PlaylistWindowView.class); }
+            @Override public void run() { toggleSibling(PlaylistWindowView.class, btnPlWin); }
         });
     }
 
@@ -210,14 +228,17 @@ public class MainWindowView extends FrameLayout {
         children.add(new ChildPos(v, lx, ly));
     }
 
-    private void toggleSibling(Class<?> cls) {
+    /** 切换 EQ / 播放列表窗口的显示，并让按钮的绿点跟着窗口状态亮/灭 */
+    private void toggleSibling(Class<?> cls, WButton btn) {
         ViewParent p = getParent();
         if (!(p instanceof ViewGroup)) return;
         ViewGroup g = (ViewGroup) p;
         for (int i = 0; i < g.getChildCount(); i++) {
             View v = g.getChildAt(i);
             if (cls.isInstance(v)) {
-                v.setVisibility(v.getVisibility() == VISIBLE ? GONE : VISIBLE);
+                boolean show = v.getVisibility() != VISIBLE;
+                v.setVisibility(show ? VISIBLE : GONE);
+                if (btn != null) btn.setActive(show);
                 break;
             }
         }
@@ -273,31 +294,33 @@ public class MainWindowView extends FrameLayout {
                 shadePressed = inRect(x, y, 254, 3, 9, 9);
                 closePressed = !shadePressed && inRect(x, y, 264, 3, 9, 9);
                 if (shadePressed || closePressed) { invalidate(); return true; }
-                // 音量 / 平衡推子拖动
+                // 音量 / 平衡推子拖动（按推子中心对齐手指，行程 = 推子可走距离）
                 if (!collapsed && inVol(x, y)) {
                     volDragging = true;
-                    setVolValue((x - (offsetX + 107 * S)) / (68 * S));
+                    setVolValue(volValueAt(x));
                     return true;
                 }
                 if (!collapsed && inBal(x, y)) {
                     balDragging = true;
-                    setBalValue((x - (offsetX + 177 * S)) / (38 * S));
+                    setBalValue(balValueAt(x));
                     return true;
                 }
                 break;
             case MotionEvent.ACTION_MOVE:
                 if (volDragging) {
-                    setVolValue((x - (offsetX + 107 * S)) / (68 * S));
+                    setVolValue(volValueAt(x));
                     return true;
                 }
                 if (balDragging) {
-                    setBalValue((x - (offsetX + 177 * S)) / (38 * S));
+                    setBalValue(balValueAt(x));
                     return true;
                 }
                 break;
             case MotionEvent.ACTION_UP:
+                boolean slid = volDragging || balDragging;
                 volDragging = false;
                 balDragging = false;
+                if (slid) invalidate(); // 松手后推子回到常态帧
                 boolean shade = shadePressed && inRect(x, y, 254, 3, 9, 9);
                 boolean close = closePressed && inRect(x, y, 264, 3, 9, 9);
                 shadePressed = false;
@@ -371,27 +394,45 @@ public class MainWindowView extends FrameLayout {
         cv.restore();
     }
 
-    /** 音量 (107,57,68x15) / 平衡 (177,57,38x15)：28 帧，frame=round(v*27) */
+    /**
+     * 音量 (107,57,68x15) / 平衡 (177,57,38x15)：28 帧背景，frame=round(v*27)；
+     * 再叠上 14x11 推子（滑块）——皮肤把推子画在精灵表尾部 y=422 处，
+     * 旧代码只画了背景帧、没画推子，所以"按钮"不见了。
+     */
     private void drawVolBal(Canvas cv) {
         int vf = Math.round(volValue * 27);
         if (vf < 0) vf = 0;
         if (vf > 27) vf = 27;
-        assets.sprite(cv, "volume", 0, vf * 15, 68, 15, 107, 57);
+        assets.sprite(cv, "volume", 0, vf * 15, VOL_W, SLIDER_H, VOL_X, VOL_Y);
+        assets.sprite(cv, "volume", volDragging ? THUMB_X_PRESSED : THUMB_X_NORMAL, THUMB_Y,
+                THUMB_W, THUMB_H, VOL_X + Math.round(volValue * VOL_TRAVEL), VOL_Y + 1);
+
         int bf = Math.round(balValue * 27);
         if (bf < 0) bf = 0;
         if (bf > 27) bf = 27;
-        assets.sprite(cv, "balance", 9, bf * 15, 38, 15, 177, 57);
+        assets.sprite(cv, "balance", BAL_SRC_X, bf * 15, BAL_W, SLIDER_H, BAL_X, BAL_Y);
+        assets.sprite(cv, "balance", balDragging ? THUMB_X_PRESSED : THUMB_X_NORMAL, THUMB_Y,
+                THUMB_W, THUMB_H, BAL_X + Math.round(balValue * BAL_TRAVEL), BAL_Y + 1);
     }
 
     /** 音量/平衡触摸区域（像素坐标） */
     private boolean inVol(float x, float y) {
-        float bx = offsetX + 107 * S, by = 57 * S;
-        return x >= bx && x <= bx + 68 * S && y >= by && y <= by + 15 * S;
+        float bx = offsetX + VOL_X * S, by = VOL_Y * S;
+        return x >= bx && x <= bx + VOL_W * S && y >= by && y <= by + SLIDER_H * S;
     }
 
     private boolean inBal(float x, float y) {
-        float bx = offsetX + 177 * S, by = 57 * S;
-        return x >= bx && x <= bx + 38 * S && y >= by && y <= by + 15 * S;
+        float bx = offsetX + BAL_X * S, by = BAL_Y * S;
+        return x >= bx && x <= bx + BAL_W * S && y >= by && y <= by + SLIDER_H * S;
+    }
+
+    /** 触摸点 -> 音量 0..1：让推子中心跟手（行程为推子可移动距离） */
+    private float volValueAt(float x) {
+        return (x - offsetX - (VOL_X + THUMB_W / 2f) * S) / (VOL_TRAVEL * (float) S);
+    }
+
+    private float balValueAt(float x) {
+        return (x - offsetX - (BAL_X + THUMB_W / 2f) * S) / (BAL_TRAVEL * (float) S);
     }
 
     private float clamp01(float v) {

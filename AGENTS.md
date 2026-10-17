@@ -16,7 +16,7 @@
 
 ## 代码约定
 
-- 播放核心 `WinampPlayer.java` / `PcmSpectrumProvider.java` / `MainActivity.java` 的行为逻辑：只做 UI 改动时不要碰。
+- 播放核心 `WinampPlayer.java` / `PcmAudioEngine.java` / `MainActivity.java` 的行为逻辑：只做 UI 改动时不要碰。
 - `SpectrumView.setFft/setWave`、`TickerView.setText` 的接口语义必须保留（PCM 频谱泵依赖它们）。
 - 皮肤渲染：整数倍缩放、关闭位图滤波，保持像素锐利。
 - `SkinAssets.java` 头部的出处注释（skin art © Nullsoft via Webamp）必须保留。

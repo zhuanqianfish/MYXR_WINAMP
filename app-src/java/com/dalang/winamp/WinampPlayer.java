@@ -3,13 +3,9 @@ package com.dalang.winamp;
 import android.content.Context;
 import android.media.MediaExtractor;
 import android.media.MediaFormat;
-import android.media.MediaPlayer;
-import android.media.audiofx.Equalizer;
-import android.media.audiofx.Visualizer;
 import android.net.Uri;
 import android.os.Handler;
 import android.os.Looper;
-import android.os.SystemClock;
 import android.util.Log;
 
 import java.util.ArrayList;
@@ -17,9 +13,13 @@ import java.util.List;
 import java.util.Random;
 
 /**
- * 播放核心：MediaPlayer + Visualizer（频谱）+ Equalizer（均衡器）。
- * Visualizer/Equalizer 挂在 MediaPlayer 的 audio session 上，reset() 后 session 不变，
- * 因此只需创建一次，换歌后继续生效。
+ * 播放核心：自研 PCM 引擎（{@link PcmAudioEngine}）+ 真正的 10 段均衡器。
+ *
+ * 不再使用 MediaPlayer：解码 → 前级 → 10 段 biquad → 音量/平衡 → AudioTrack。
+ * 均衡器的频点固定为 Winamp 的 60/170/310/600/1k/3k/6k/12k/14k/16k，
+ * 与设备有几段、是否走 offload 无关；频谱也从同一份 PCM 直接算出来。
+ *
+ * 对外 API 与旧版完全一致，MainActivity 不需要改。
  */
 public class WinampPlayer {
 
@@ -46,136 +46,39 @@ public class WinampPlayer {
 
     private final Context appContext;
     private final Listener listener;
-    private final MediaPlayer mp;
-    private Visualizer vis;
-    private Equalizer eq;
+    private final Handler ui = new Handler(Looper.getMainLooper());
+
+    private PcmAudioEngine engine;
     private SpectrumView spectrumView;
+
     private final List<Track> playlist = new ArrayList<>();
     private int index = -1;
     private boolean shuffle = false;
     private boolean repeat = false;
     private boolean prepared = false;
-    private boolean eqEnabled = true;
-    private float vol = 0.8f;   // 0..1
-    private float bal = 0f;     // -1..1
-    private float preampDb = 0f;
-    private final Random random = new Random();
     private int consecutiveErrors = 0;
 
-    // ---- Visualizer 看门狗：player session 3 秒无 FFT 数据则切到系统总线（session 0）----
-    private long lastFftTimeMs = 0; // 只有真正收到 FFT 回调才更新
-    private long visSessionStartMs = 0;
-    private boolean visOnMix = false;
-    private final Handler fxHandler = new Handler(Looper.getMainLooper());
-    // ---- 本地 PCM 频谱：不经过系统 Visualizer，解码算 FFT，设备无关 ----
-    private final PcmSpectrumProvider pcmSpec = new PcmSpectrumProvider();
-    private final float[] barVals = new float[PcmSpectrumProvider.BARS];
-    private final byte[] synthFft = new byte[1024];
-    private final byte[] synthWave = new byte[1024];
-    private boolean pumpRunning = false;
-    private final Visualizer.OnDataCaptureListener captureListener =
-            new Visualizer.OnDataCaptureListener() {
-                @Override
-                public void onWaveFormDataCapture(Visualizer v, byte[] waveform, int rate) {
-                    if (spectrumView != null) spectrumView.setWave(waveform);
-                }
-
-                @Override
-                public void onFftDataCapture(Visualizer v, byte[] fft, int rate) {
-                    lastFftTimeMs = SystemClock.uptimeMillis();
-                    if (spectrumView != null) spectrumView.setFft(fft);
-                }
-            };
-    private final Runnable visWatchdog = new Runnable() {
-        @Override
-        public void run() {
-            if (visOnMix) return;
-            try {
-                long now = SystemClock.uptimeMillis();
-                if (prepared && mp.isPlaying()
-                        && now - visSessionStartMs > 3000
-                        && now - lastFftTimeMs > 3000) {
-                    switchVisToMix();
-                }
-            } catch (Exception e) {
-                Log.w(TAG, "visWatchdog", e);
-            }
-        }
-    };
-
-    /**
-     * PCM 频谱泵：每 120ms 按播放进度算一次 FFT。只在系统 Visualizer
-     * 超过 1.5 秒没给数据时才接管（避免两路打架）。
-     */
-    private final Runnable spectrumPump = new Runnable() {
-        @Override
-        public void run() {
-            if (!pumpRunning) return;
-            try {
-                if (prepared && pcmSpec.isReady()
-                        && SystemClock.uptimeMillis() - lastFftTimeMs > 1500) {
-                    long pos = mp.getCurrentPosition();
-                    if (pcmSpec.getBarValues(pos, barVals)) {
-                        synthFftFromBars(barVals, synthFft);
-                        if (spectrumView != null) spectrumView.setFft(synthFft);
-                    }
-                    if (pcmSpec.getWaveBytes(pos, synthWave)) {
-                        if (spectrumView != null) spectrumView.setWave(synthWave);
-                    }
-                }
-            } catch (Exception e) {
-                Log.w(TAG, "spectrumPump", e);
-            }
-            if (pumpRunning) fxHandler.postDelayed(this, 120);
-        }
-    };
-
-    private void startPump() {
-        if (!pumpRunning) {
-            pumpRunning = true;
-            fxHandler.post(spectrumPump);
-        }
-    }
-
-    private void stopPump() {
-        pumpRunning = false;
-        fxHandler.removeCallbacks(spectrumPump);
-    }
-
-    /** 把 28 段 0..1 反推成 Visualizer FFT 字节格式，复用 SpectrumView 现有绘制 */
-    private static void synthFftFromBars(float[] bars, byte[] fft) {
-        java.util.Arrays.fill(fft, (byte) 0);
-        int bins = fft.length / 2; // 512
-        for (int b = 0; b < bars.length; b++) {
-            float v = Math.max(0f, Math.min(1f, bars[b]));
-            int mag = (int) (Math.pow(10, v * 42 / 20.0) - 1);
-            if (mag > 127) mag = 127;
-            if (mag < 0) mag = 0;
-            int bin0 = 1 + (int) (Math.pow((double) b / bars.length, 2.0) * (bins - 2));
-            int bin1 = 1 + (int) (Math.pow((double) (b + 1) / bars.length, 2.0) * (bins - 2));
-            if (bin1 < bin0) bin1 = bin0;
-            for (int i = bin0; i <= bin1 && 2 * i + 1 < fft.length; i++) {
-                fft[2 * i] = (byte) mag;
-                fft[2 * i + 1] = 0;
-            }
-        }
-    }
+    // EQ / 音量状态（换歌后要重新灌进新引擎）
+    private boolean eqEnabled = true;
+    private float vol = 0.8f;      // 0..1
+    private float bal = 0f;        // -1..1
+    private float preampDb = 0f;   // dB
+    private final float[] bandDb = new float[PcmAudioEngine.BANDS];
 
     // 最近一次 probe 到的音频格式
     private int lastSampleRate = 0;
     private int lastBitrate = 0;
     private int lastChannels = 0;
 
+    // 引擎回调代数：换歌后旧引擎的迟到回调直接丢弃
+    private int generation = 0;
+
+    private final byte[] synthFft = new byte[1024];
+    private final Random random = new Random();
+
     public WinampPlayer(Context context, Listener listener) {
         this.appContext = context.getApplicationContext();
         this.listener = listener;
-        mp = new MediaPlayer();
-        mp.setOnCompletionListener(m -> onCompletion());
-        mp.setOnErrorListener((m, what, extra) -> {
-            Log.w(TAG, "player error " + what + "," + extra);
-            handleTrackError();
-            return true;
-        });
     }
 
     public void setSpectrumView(SpectrumView v) { spectrumView = v; }
@@ -199,24 +102,55 @@ public class WinampPlayer {
         index = i;
         Track t = playlist.get(i);
         try {
-            prepared = false;
-            mp.reset();
-            mp.setDataSource(appContext, Uri.parse(t.uri));
-            mp.prepare();
+            releaseEngine();
+            generation++;
+            final int gen = generation;
+
+            PcmAudioEngine e = new PcmAudioEngine(appContext, t.uri,
+                    new PcmAudioEngine.Listener() {
+                        @Override
+                        public void onEnded() {
+                            ui.post(new Runnable() {
+                                @Override public void run() {
+                                    if (gen != generation) return;
+                                    onCompletion();
+                                }
+                            });
+                        }
+
+                        @Override
+                        public void onError(final String message) {
+                            Log.w(TAG, "engine: " + message);
+                            ui.post(new Runnable() {
+                                @Override public void run() {
+                                    if (gen != generation) return;
+                                    prepared = false;
+                                    handleTrackError();
+                                }
+                            });
+                        }
+
+                        @Override
+                        public void onSpectrum(float[] bars, byte[] wave) {
+                            SpectrumView sv = spectrumView;
+                            if (sv == null) return;
+                            synthFftFromBars(bars, synthFft);
+                            sv.setFft(synthFft);
+                            sv.setWave(wave);
+                        }
+                    });
+
+            engine = e;
+            e.setDurationHint(t.durationMs);
+            applyEngineParams(e);
+            e.start();
             prepared = true;
-            attachFx();
-            applyVolumes();
             probeFormat(t.uri);
-            mp.start();
-            ensureVisEnabled();
-            armVisWatchdog();
-            pcmSpec.load(appContext, t.uri, t.durationMs);
-            startPump();
             consecutiveErrors = 0;
             listener.onTrackChanged(t, index);
             listener.onPlayingState(true);
-        } catch (Exception e) {
-            Log.w(TAG, "playAt failed: " + t.uri, e);
+        } catch (Exception ex) {
+            Log.w(TAG, "playAt failed: " + t.uri, ex);
             prepared = false;
             handleTrackError();
         }
@@ -228,10 +162,7 @@ public class WinampPlayer {
         if (!playlist.isEmpty() && consecutiveErrors >= playlist.size()) {
             consecutiveErrors = 0;
             prepared = false;
-            try {
-                mp.reset();
-            } catch (Exception ignored) {
-            }
+            releaseEngine();
             listener.onPlayingState(false);
             return;
         }
@@ -239,44 +170,28 @@ public class WinampPlayer {
     }
 
     public void play() {
-        if (!prepared) {
+        PcmAudioEngine e = engine;
+        if (e == null || !prepared || !e.isAlive()) {
             if (!playlist.isEmpty()) playAt(index >= 0 ? index : 0);
             return;
         }
-        try {
-            mp.start();
-            ensureVisEnabled();
-            armVisWatchdog();
-            startPump();
-            listener.onPlayingState(true);
-        } catch (Exception e) {
-            Log.w(TAG, "play failed", e);
-        }
+        e.play();
+        listener.onPlayingState(true);
     }
 
     public void pause() {
-        try {
-            fxHandler.removeCallbacks(visWatchdog);
-            stopPump();
-            if (mp.isPlaying()) mp.pause();
-            listener.onPlayingState(false);
-        } catch (Exception e) {
-            Log.w(TAG, "pause failed", e);
-        }
+        PcmAudioEngine e = engine;
+        if (e != null) e.pause();
+        listener.onPlayingState(false);
     }
 
     public void stop() {
-        try {
-            fxHandler.removeCallbacks(visWatchdog);
-            stopPump();
-            if (prepared) {
-                if (mp.isPlaying()) mp.pause();
-                mp.seekTo(0);
-            }
-            listener.onPlayingState(false);
-        } catch (Exception e) {
-            Log.w(TAG, "stop failed", e);
+        PcmAudioEngine e = engine;
+        if (e != null) {
+            e.seekTo(0);
+            e.pause();
         }
+        listener.onPlayingState(false);
     }
 
     public void next() {
@@ -312,202 +227,109 @@ public class WinampPlayer {
         } else if (shuffle || index < playlist.size() - 1) {
             next();
         } else {
-            stop();
+            // 放完最后一首：引擎线程已经结束，必须释放掉，否则 play() 会拨不动
+            prepared = false;
+            releaseEngine();
+            listener.onPlayingState(false);
         }
     }
 
     public void seekTo(long ms) {
-        try {
-            if (prepared) mp.seekTo((int) ms);
-        } catch (Exception e) {
-            Log.w(TAG, "seek failed", e);
-        }
+        PcmAudioEngine e = engine;
+        if (e != null) e.seekTo(ms);
     }
 
     public long getPosition() {
-        try {
-            return prepared ? mp.getCurrentPosition() : 0;
-        } catch (Exception e) {
-            return 0;
-        }
+        PcmAudioEngine e = engine;
+        return e == null ? 0 : e.getPositionMs();
     }
 
     public long getDuration() {
-        try {
-            return prepared ? mp.getDuration() : 0;
-        } catch (Exception e) {
-            return 0;
-        }
+        PcmAudioEngine e = engine;
+        return e == null ? 0 : e.getDurationMs();
     }
 
     public boolean isPlaying() {
-        try {
-            return prepared && mp.isPlaying();
-        } catch (Exception e) {
-            return false;
-        }
+        PcmAudioEngine e = engine;
+        return prepared && e != null && e.isPlaying();
     }
 
     // ---------------- 音量 / 声道 ----------------
 
     public void setVolume(float v) {
         vol = Math.max(0f, Math.min(1f, v));
-        applyVolumes();
+        PcmAudioEngine e = engine;
+        if (e != null) e.setVolume(vol);
     }
 
     public void setBalance(float b) {
         bal = Math.max(-1f, Math.min(1f, b));
-        applyVolumes();
+        PcmAudioEngine e = engine;
+        if (e != null) e.setBalance(bal);
     }
 
+    /** 真前级：在 10 段滤波器之前乘增益（不再是 MediaPlayer 音量那种会被 1.0 截顶的假前级） */
     public void setPreampDb(float db) {
         preampDb = db;
-        applyVolumes();
+        PcmAudioEngine e = engine;
+        if (e != null) e.setPreampDb(preampDb);
     }
 
-    private void applyVolumes() {
-        float gain = vol * (float) Math.pow(10, preampDb / 20.0);
-        gain = Math.max(0f, Math.min(1f, gain));
-        float left = gain * (bal < 0 ? 1f + bal : 1f);
-        float right = gain * (bal > 0 ? 1f - bal : 1f);
-        try {
-            mp.setVolume(left, right);
-        } catch (Exception e) {
-            Log.w(TAG, "setVolume failed", e);
-        }
-    }
+    // ---------------- 均衡器 ----------------
 
-    // ---------------- Visualizer / Equalizer ----------------
+    public int getEqBandCount() { return PcmAudioEngine.BANDS; }
 
-    private void attachFx() {
-        int session = mp.getAudioSessionId();
-        if (session == 0) return;
-        if (vis == null) {
-            try {
-                vis = new Visualizer(session);
-                vis.setCaptureSize(1024);
-                vis.setScalingMode(Visualizer.SCALING_MODE_NORMALIZED);
-                vis.setDataCaptureListener(captureListener,
-                        Visualizer.getMaxCaptureRate() / 2, true, true);
-                // 启用失败则丢弃，下次播放时重试（部分手机首次 attach 会静默失败）
-                if (vis.setEnabled(true) != Visualizer.SUCCESS) {
-                    try {
-                        vis.release();
-                    } catch (Exception ignored) {
-                    }
-                    vis = null;
-                    Log.w(TAG, "Visualizer enable failed, will retry next play");
-                }
-            } catch (Exception e) {
-                Log.w(TAG, "Visualizer unavailable", e);
-                vis = null;
-            }
-        }
-        if (eq == null) {
-            try {
-                eq = new Equalizer(0, session);
-                eq.setEnabled(eqEnabled);
-            } catch (Exception e) {
-                Log.w(TAG, "Equalizer unavailable", e);
-                eq = null;
-            }
-        }
-    }
-
-    /** 每次真正开始播放后都确保 Visualizer 处于启用态 */
-    private void ensureVisEnabled() {
-        if (vis == null) {
-            attachFx();
-            return;
-        }
-        try {
-            if (!vis.getEnabled() && vis.setEnabled(true) != Visualizer.SUCCESS) {
-                try {
-                    vis.release();
-                } catch (Exception ignored) {
-                }
-                vis = null;
-            }
-        } catch (Exception e) {
-            Log.w(TAG, "ensureVisEnabled failed", e);
-        }
-    }
-
-    /**
-     * 看门狗触发：player session 拿不到数据（offload 硬解/系统音效占用），
-     * 改从系统输出总线（session 0）抓，能绕开上述占用。
-     */
-    private void switchVisToMix() {
-        try {
-            releaseVis();
-            vis = new Visualizer(0);
-            vis.setCaptureSize(1024);
-            vis.setScalingMode(Visualizer.SCALING_MODE_NORMALIZED);
-            vis.setDataCaptureListener(captureListener,
-                    Visualizer.getMaxCaptureRate() / 2, true, true);
-            if (vis.setEnabled(true) == Visualizer.SUCCESS) {
-                visOnMix = true;
-                Log.i(TAG, "Visualizer switched to output mix (session 0)");
-            } else {
-                releaseVis();
-            }
-        } catch (Exception e) {
-            Log.w(TAG, "switchVisToMix failed", e);
-            releaseVis();
-        }
-    }
-
-    private void releaseVis() {
-        if (vis == null) return;
-        try {
-            vis.setEnabled(false);
-        } catch (Exception ignored) {
-        }
-        try {
-            vis.release();
-        } catch (Exception ignored) {
-        }
-        vis = null;
-    }
-
-    private void armVisWatchdog() {
-        visSessionStartMs = SystemClock.uptimeMillis();
-        fxHandler.removeCallbacks(visWatchdog);
-        fxHandler.postDelayed(visWatchdog, 3500);
-    }
-
-    public int getEqBandCount() {
-        try {
-            return eq == null ? 0 : eq.getNumberOfBands();
-        } catch (Exception e) {
-            return 0;
-        }
-    }
-
-    /** sliderIndex: 0..9 对应 10 段推子；db: -12..+12 */
+    /** sliderIndex: 0..9，对应 60/170/310/600/1k/3k/6k/12k/14k/16k；db: 增益 */
     public void setEqBandDb(int sliderIndex, float db) {
-        if (eq == null) return;
-        try {
-            short bands = eq.getNumberOfBands();
-            if (bands <= 0) return;
-            short band = (short) (sliderIndex * bands / 10);
-            if (band >= bands) band = (short) (bands - 1);
-            short[] range = eq.getBandLevelRange();
-            short mb = (short) Math.round(db * 100);
-            if (mb < range[0]) mb = range[0];
-            if (mb > range[1]) mb = range[1];
-            eq.setBandLevel(band, mb);
-        } catch (Exception e) {
-            Log.w(TAG, "setBandLevel failed", e);
-        }
+        if (sliderIndex < 0 || sliderIndex >= PcmAudioEngine.BANDS) return;
+        bandDb[sliderIndex] = db;
+        PcmAudioEngine e = engine;
+        if (e != null) e.setBandDb(sliderIndex, db);
     }
 
     public void setEqEnabled(boolean on) {
         eqEnabled = on;
-        try {
-            if (eq != null) eq.setEnabled(on);
-        } catch (Exception e) {
-            Log.w(TAG, "eq enable failed", e);
+        PcmAudioEngine e = engine;
+        if (e != null) e.setEqEnabled(on);
+    }
+
+    private void applyEngineParams(PcmAudioEngine e) {
+        e.setVolume(vol);
+        e.setBalance(bal);
+        e.setPreampDb(preampDb);
+        e.setEqEnabled(eqEnabled);
+        for (int b = 0; b < PcmAudioEngine.BANDS; b++) {
+            e.setBandDb(b, bandDb[b]);
+        }
+    }
+
+    private void releaseEngine() {
+        PcmAudioEngine e = engine;
+        engine = null;
+        if (e != null) {
+            try {
+                e.release();
+            } catch (Exception ignored) {
+            }
+        }
+    }
+
+    /** 把 28 段 0..1 反推成 Visualizer FFT 字节格式，复用 SpectrumView 的绘制 */
+    private static void synthFftFromBars(float[] bars, byte[] fft) {
+        java.util.Arrays.fill(fft, (byte) 0);
+        int bins = fft.length / 2; // 512
+        for (int b = 0; b < bars.length; b++) {
+            float v = Math.max(0f, Math.min(1f, bars[b]));
+            int mag = (int) (Math.pow(10, v * 42 / 20.0) - 1);
+            if (mag > 127) mag = 127;
+            if (mag < 0) mag = 0;
+            int bin0 = 1 + (int) (Math.pow((double) b / bars.length, 2.0) * (bins - 2));
+            int bin1 = 1 + (int) (Math.pow((double) (b + 1) / bars.length, 2.0) * (bins - 2));
+            if (bin1 < bin0) bin1 = bin0;
+            for (int i = bin0; i <= bin1 && 2 * i + 1 < fft.length; i++) {
+                fft[2 * i] = (byte) mag;
+                fft[2 * i + 1] = 0;
+            }
         }
     }
 
@@ -548,27 +370,7 @@ public class WinampPlayer {
     public int getLastChannels() { return lastChannels; }
 
     public void release() {
-        fxHandler.removeCallbacks(visWatchdog);
-        stopPump();
-        pcmSpec.release();
-        try {
-            if (vis != null) {
-                vis.setEnabled(false);
-                vis.release();
-                vis = null;
-            }
-        } catch (Exception ignored) {
-        }
-        try {
-            if (eq != null) {
-                eq.release();
-                eq = null;
-            }
-        } catch (Exception ignored) {
-        }
-        try {
-            mp.release();
-        } catch (Exception ignored) {
-        }
+        generation++;
+        releaseEngine();
     }
 }

@@ -22,7 +22,7 @@ $AAPT2 compile --dir res -o build/compiled.zip
 $AAPT2 link -o build/app-unsigned.apk \
   --manifest AndroidManifest.xml \
   -I $ANDROID_JAR \
-  --version-code 7 --version-name 0.1 \
+  --version-code 12 --version-name 0.7 \
   -A assets \
   --java build/gen \
   build/compiled.zip

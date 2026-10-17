@@ -49,7 +49,9 @@ public class SkinAssets {
         String rows012 = "abcdefghijklmnopqrstuvwxyz\"@";
         for (int i = 0; i < rows012.length(); i++) FONT[rows012.charAt(i)] = new int[]{i, 0};
         FONT[' '] = new int[]{30, 0};
-        String r1 = "0123456789….:()-'!_+/\\[]^&%,=$#";
+        // 注意：base skin 的 text.bmp 里反斜杠在前、正斜杠在后（第 20/21 格），
+        // 这里必须按位图顺序写 '\\' 再 '/'，否则时间里的 "0:00/12:51" 会画成反斜杠。
+        String r1 = "0123456789….:()-'!_+\\/[]^&%,=$#";
         // 注意：'\\' 在 Java 源码里写作 '\\\\'
         for (int i = 0; i < r1.length(); i++) {
             char ch = r1.charAt(i);

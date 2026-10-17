@@ -2,7 +2,7 @@ package com.dalang.winamp;
 
 /**
  * 频谱数据持有类（不再是 View，绘制由 MainWindowView 在分析仪矩形内完成）。
- * WinampPlayer 的 Visualizer 回调线程调用 setFft/setWave。
+ * PcmAudioEngine 的音频线程每 ~40ms 调用 setFft/setWave。
  */
 public class SpectrumView {
 
