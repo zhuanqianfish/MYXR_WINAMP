@@ -13,3 +13,6 @@ local.properties
 Thumbs.db
 
 # 说明：release APK（app-src/WinampClassic.apk）是有意保留的交付物，不忽略
+
+# 本地 agent 工作记录（记忆/日志），不入库
+.workbuddy-ai/
