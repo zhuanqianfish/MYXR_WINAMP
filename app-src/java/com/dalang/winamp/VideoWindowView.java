@@ -171,7 +171,15 @@ public class VideoWindowView extends FrameLayout {
         applyTransform();
     }
 
-    /** 等比缩放 + 旋转，把画面装进 275x102 的框里（多余部分留黑边） */
+    /**
+     * 等比缩放 + 旋转，把画面装进 275x102 的框里（多余部分留黑边）。
+     *
+     * TextureView 的 setTransform 是「视图坐标 → 拉伸后的纹理坐标」：
+     * 单位矩阵 = 把纹理拉满整个 View（非等比）。所以先算出一个等比缩放 k，
+     * 再折算回这个非等比空间：sx = (vw/videoW)/k、sy = (vh/videoH)/k。
+     * 旋转取 -rot，是因为 KEY_ROTATION 说的是"顺时针转多少度才正"，
+     * 而我们要把视图坐标反推回纹理坐标（逆旋转）。
+     */
     private void applyTransform() {
         int vw = textureView.getWidth(), vh = textureView.getHeight();
         if (vw <= 0 || vh <= 0 || videoW <= 0 || videoH <= 0) {
@@ -184,14 +192,17 @@ public class VideoWindowView extends FrameLayout {
         float dispW = swapped ? videoH : videoW;
         float dispH = swapped ? videoW : videoH;
         float k = Math.min(vw / dispW, vh / dispH);
-        float dw = dispW * k, dh = dispH * k;
-
-        float sx = swapped ? videoW / dh : videoW / dw;
-        float sy = swapped ? videoH / dw : videoH / dh;
+        if (k <= 0) {
+            matrix.reset();
+            textureView.setTransform(matrix);
+            return;
+        }
+        float sx = (vw / (float) videoW) / k;
+        float sy = (vh / (float) videoH) / k;
 
         matrix.reset();
         matrix.postTranslate(-vw / 2f, -vh / 2f);
-        matrix.postRotate(rot);
+        matrix.postRotate(-rot);
         matrix.postScale(sx, sy);
         matrix.postTranslate(vw / 2f, vh / 2f);
         textureView.setTransform(matrix);
