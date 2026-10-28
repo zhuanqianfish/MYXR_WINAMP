@@ -548,4 +548,6 @@ public class MainWindowView extends FrameLayout {
     public WButton getBtnEject() { return btnEject; }
     public WButton getBtnShuffle() { return btnShuffle; }
     public WButton getBtnRepeat() { return btnRepeat; }
+    public WButton getBtnEqWin() { return btnEqWin; }
+    public WButton getBtnPlWin() { return btnPlWin; }
 }

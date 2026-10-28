@@ -11,6 +11,7 @@ import android.util.Log;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Random;
+import java.util.concurrent.CopyOnWriteArrayList;
 
 /**
  * 播放核心：自研 PCM 引擎（{@link PcmAudioEngine}）+ 真正的 10 段均衡器。
@@ -45,7 +46,11 @@ public class WinampPlayer {
             {0.58f, 0.56f, 0.52f, 0.5f, 0.5f, 0.52f, 0.58f, 0.62f, 0.6f, 0.56f};
 
     private final Context appContext;
-    private final Listener listener;
+    /**
+     * 监听者可以有多个：PlaybackService 用它更新媒体会话/通知，
+     * MainActivity 用它刷新界面。互不覆盖。
+     */
+    private final List<Listener> listeners = new CopyOnWriteArrayList<>();
     private final Handler ui = new Handler(Looper.getMainLooper());
 
     private PcmAudioEngine engine;
@@ -78,7 +83,23 @@ public class WinampPlayer {
 
     public WinampPlayer(Context context, Listener listener) {
         this.appContext = context.getApplicationContext();
-        this.listener = listener;
+        if (listener != null) listeners.add(listener);
+    }
+
+    public void addListener(Listener l) {
+        if (l != null && !listeners.contains(l)) listeners.add(l);
+    }
+
+    public void removeListener(Listener l) {
+        listeners.remove(l);
+    }
+
+    private void fireTrackChanged(Track t, int i) {
+        for (Listener l : listeners) l.onTrackChanged(t, i);
+    }
+
+    private void firePlayingState(boolean playing) {
+        for (Listener l : listeners) l.onPlayingState(playing);
     }
 
     public void setSpectrumView(SpectrumView v) { spectrumView = v; }
@@ -92,8 +113,16 @@ public class WinampPlayer {
     public int getIndex() { return index; }
     public int getCount() { return playlist.size(); }
 
+    /** 当前曲目（未播放时为 null） */
+    public Track getCurrentTrack() {
+        int i = index;
+        return (i >= 0 && i < playlist.size()) ? playlist.get(i) : null;
+    }
+
     public void setShuffle(boolean s) { shuffle = s; }
     public void setRepeat(boolean r) { repeat = r; }
+    public boolean isShuffle() { return shuffle; }
+    public boolean isRepeat() { return repeat; }
 
     // ---------------- 播放控制 ----------------
 
@@ -147,8 +176,8 @@ public class WinampPlayer {
             prepared = true;
             probeFormat(t.uri);
             consecutiveErrors = 0;
-            listener.onTrackChanged(t, index);
-            listener.onPlayingState(true);
+            fireTrackChanged(t, index);
+            firePlayingState(true);
         } catch (Exception ex) {
             Log.w(TAG, "playAt failed: " + t.uri, ex);
             prepared = false;
@@ -163,7 +192,7 @@ public class WinampPlayer {
             consecutiveErrors = 0;
             prepared = false;
             releaseEngine();
-            listener.onPlayingState(false);
+            firePlayingState(false);
             return;
         }
         next();
@@ -176,13 +205,13 @@ public class WinampPlayer {
             return;
         }
         e.play();
-        listener.onPlayingState(true);
+        firePlayingState(true);
     }
 
     public void pause() {
         PcmAudioEngine e = engine;
         if (e != null) e.pause();
-        listener.onPlayingState(false);
+        firePlayingState(false);
     }
 
     public void stop() {
@@ -191,7 +220,7 @@ public class WinampPlayer {
             e.seekTo(0);
             e.pause();
         }
-        listener.onPlayingState(false);
+        firePlayingState(false);
     }
 
     public void next() {
@@ -230,7 +259,7 @@ public class WinampPlayer {
             // 放完最后一首：引擎线程已经结束，必须释放掉，否则 play() 会拨不动
             prepared = false;
             releaseEngine();
-            listener.onPlayingState(false);
+            firePlayingState(false);
         }
     }
 
@@ -262,11 +291,15 @@ public class WinampPlayer {
         if (e != null) e.setVolume(vol);
     }
 
+    public float getVolume() { return vol; }
+
     public void setBalance(float b) {
         bal = Math.max(-1f, Math.min(1f, b));
         PcmAudioEngine e = engine;
         if (e != null) e.setBalance(bal);
     }
+
+    public float getBalance() { return bal; }
 
     /** 真前级：在 10 段滤波器之前乘增益（不再是 MediaPlayer 音量那种会被 1.0 截顶的假前级） */
     public void setPreampDb(float db) {

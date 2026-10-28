@@ -16,12 +16,17 @@
 
 ## 代码约定
 
-- 播放核心 `WinampPlayer.java` / `PcmAudioEngine.java` / `MainActivity.java` 的行为逻辑：只做 UI 改动时不要碰。
-- `SpectrumView.setFft/setWave`、`TickerView.setText` 的接口语义必须保留（PCM 频谱泵依赖它们）。
+- 播放核心 `PlaybackService.java` / `WinampPlayer.java` / `PcmAudioEngine.java` / `MainActivity.java` 的行为逻辑：只做 UI 改动时不要碰。
+- **播放列表归 `PlaybackService` 所有**（`tracks` + 持久化），界面不要自己存一份；增删排序都走服务的 `addTracks/removeTrack/sortByTitle`，改完服务会广播 `PlaylistListener`。
+- **传输控制走服务**（`svc.play()/pause()/stop()/next()/prev()/seekTo()`），不要直接调 `player.play()`——通知栏、锁屏和会话状态要跟着变。音量/平衡/均衡器这类纯参数才直接调 `player`。
+- `WinampPlayer.Listener` 是多播的：服务注册一份更新媒体会话，界面注册一份刷新皮肤控件，互不覆盖。
+- `SpectrumView.setFft/setWave`、`TickerView.setText` 的接口语义必须保留（PCM 频谱泵依赖它们）；界面销毁时记得 `player.setSpectrumView(null)`，否则引擎会攥着已销毁的 View。
 - 皮肤渲染：整数倍缩放、关闭位图滤波，保持像素锐利。
 - `SkinAssets.java` 头部的出处注释（skin art © Nullsoft via Webamp）必须保留。
-- 只用 Android framework API，不引入 androidx / 第三方库。
-- 换默认歌曲：替换 `assets/wenroutaozi_Llama.wav` 即可，改名只需改 `MainActivity` 里 `DEFAULT_SONG_ASSET` / `DEFAULT_SONG_TITLE` 两个常量。
+- 只用 Android framework API，不引入 androidx / 第三方库（媒体会话用的是 `android.media.session.*`，不是 `MediaSessionCompat`）。
+- 换默认歌曲：替换 `assets/wenroutaozi_Llama.wav` 即可，改名只需改 `MediaProbe` 里 `DEFAULT_SONG_*` 三个常量。
+- 视频窗口只在曲目 `hasVideo` 时出现，且会自动让均衡器窗口腾位置；改布局时注意别把一屏撑爆。
+
 
 ## 测试
 

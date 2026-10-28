@@ -10,13 +10,13 @@
 </p>
 
 <p align="center">
-  <sub><i>A pixel-perfect Winamp 2.x remake for Android — real skin bitmaps, live spectrum, a self-implemented 10-band equalizer and a full playlist editor.</i></sub>
+  <sub><i>A pixel-perfect Winamp 2.x remake for Android — real skin bitmaps, live spectrum, a self-implemented 10-band equalizer, a full playlist editor, MP4 video playback and lockscreen media controls.</i></sub>
 </p>
 
 <p align="center">
   <img alt="Android 8.0+" src="https://img.shields.io/badge/Android-8.0%2B-3DDC84?logo=android&logoColor=white">
   <img alt="minSdk 26" src="https://img.shields.io/badge/minSdk-26-blue">
-  <img alt="version" src="https://img.shields.io/badge/version-0.7-informational">
+  <img alt="version" src="https://img.shields.io/badge/version-0.8-informational">
   <img alt="license" src="https://img.shields.io/badge/License-MIT-yellow">
   <img alt="no gradle" src="https://img.shields.io/badge/build-aapt2%20%2B%20d8%20%2B%20apksigner-2b2b2b">
 </p>
@@ -38,7 +38,13 @@
 | 🎚 | **10 段均衡器** | 自研 DSP：解码 → 前级 → 10 个 peaking biquad → AudioTrack。频点固定为 Winamp 的 `60 / 170 / 310 / 600 / 1k / 3k / 6k / 12k / 14k / 16k`，另有 5 组预设与 AUTO 曲线 |
 | 📜 | **播放列表** | ADD / REM / SEL / MISC、LIST OPTS、已选与总时长、自定义滚动条、`PLEDIT.TXT` 配色（选中行蓝底白字） |
 | ▶️ | **播放控制** | 播放 / 暂停 / 停止 / 上一首 / 下一首 / 随机 / 循环 / 进度拖动 / 音量 / 平衡 |
+| 🎬 | **MP4 / 视频支持** | 除音频格式外，`mp4 / mkv / webm / 3gp` 等带画面的容器也能进列表：音频照旧走自研 DSP（均衡器、频谱对视频同样生效），画面在独立的 **VIDEO 窗口** 里按音频播放头对齐渲染，竖屏视频按 `KEY_ROTATION` 自动转正 |
+| 🔒 | **锁屏 / 通知栏控制** | `MediaSession` + 媒体通知：锁屏和通知栏都有封面、标题、进度和上一首 / 播放暂停 / 下一首；耳机线控、蓝牙按键、来电避让、拔耳机暂停全部生效 |
 | 🎵 | **内置歌曲** | 首次启动自动播放 `assets/wenroutaozi_Llama.wav`，可直接替换 |
+
+> **关于后台播放**：播放核心在 `PlaybackService`（前台服务 + `MediaSession`）里，界面只是它的遥控器。所以退出界面、息屏、划掉任务都不会断音；播放期间持有 `PARTIAL_WAKE_LOCK`，避免深度睡眠把解码线程掐住。
+
+> **关于视频**：画面用 `MediaCodec` 解到 `TextureView`，帧的节奏跟着**音频播放头**走（超前就等、落后就丢、拖动就 flush 重新对齐），所以不会出现画面声音不同步。音频不经过视频解码器，因此 10 段均衡器和频谱对 MP4 一样有效。
 
 > **关于均衡器**：Android 自带的 `audiofx.Equalizer` 在多数机型只有 5 段、频点由厂商决定，且可能被硬件 offload 绕过。所以本项目不用它——`PcmAudioEngine` 自己解码 PCM、自己跑 10 个 RBJ peaking 滤波器，频点和段数完全可控，前级也是滤波器链里的真增益。
 
@@ -80,7 +86,7 @@ $AAPT2 compile --dir res -o build/compiled.zip
 $AAPT2 link -o build/app-unsigned.apk \
   --manifest AndroidManifest.xml \
   -I $ANDROID_JAR \
-  --version-code 12 --version-name 0.7 \
+  --version-code 13 --version-name 0.8 \
   -A assets \
   --java build/gen \
   build/compiled.zip
@@ -118,16 +124,21 @@ MYXR_WINAMP/
 │   │   ├── skin/*.bmp              # Winamp base skin 的 14 张精灵表
 │   │   └── wenroutaozi_Llama.wav   # 内置默认歌曲
 │   ├── java/com/dalang/winamp/
-│   │   ├── MainActivity.java       # 入口、三窗口装配、播放列表持久化
+│   │   ├── MainActivity.java       # 入口、四窗口装配、文件选择（音频+视频）
+│   │   ├── PlaybackService.java    # 前台服务：播放列表归属、MediaSession、媒体通知、音频焦点
 │   │   ├── WinampPlayer.java       # 播放队列 / 控制 / 均衡器与音量状态
 │   │   ├── PcmAudioEngine.java     # 解码 + 10 段 DSP + AudioTrack + FFT 频谱
+│   │   ├── MediaProbe.java         # 曲目探测（音频轨/视频轨/时长/封面）
+│   │   ├── VideoWindowView.java    # VIDEO 窗口（TextureView + 等比缩放/旋转）
+│   │   ├── VideoRenderer.java      # 视频轨解码线程，按音频播放头对齐
 │   │   ├── MainWindowView.java     # 主窗口：频谱、跑马灯、音量/平衡、按钮
 │   │   ├── EqWindowView.java       # 均衡器窗口
 │   │   ├── PlaylistWindowView.java # 播放列表窗口
 │   │   ├── PlaylistAdapter.java    # 列表行（20px 行高 / PLEDIT 配色）
 │   │   └── SkinAssets.java         # 精灵表加载与像素级绘制
-│   ├── res/                        # 图标、主题、字符串
+│   ├── res/                        # 图标、主题、字符串、通知栏矢量图标
 │   └── WinampClassic.apk           # 构建产物
+├── build.sh                        # 一键构建（等价于 BUILD.md 的手工链路）
 ├── BUILD.md                        # 手工构建链路说明
 ├── SPEC.md / SPEC_V2.md            # 设计与还原规格
 ├── screenshot.jpg                  # 真机截图
@@ -146,9 +157,9 @@ MYXR_WINAMP/
 
 ## 版本说明
 
-版本号从 **v0.1 直接跳到 v0.7**，中间没有 0.2–0.6。
+**v0.8**：新增 MP4/视频支持与锁屏媒体控制。播放核心从 Activity 搬进 `PlaybackService`（前台服务 + `MediaSession`），界面改为绑定服务；音频引擎、皮肤渲染、均衡器算法一行没动。
 
-这几个版本号本来对应几次重做尝试，但它们都让 AI 做崩了：改一处坏一处 —— 滑杆不显示、播放列表错位、均衡器干脆不出声，没有一个能出包。
+**v0.7**：第一个真正能用的版本。版本号从 v0.1 直接跳到 v0.7，中间没有 0.2–0.6 —— 这几个版本号本来对应几次重做尝试，但它们都让 AI 做崩了：改一处坏一处（滑杆不显示、播放列表错位、均衡器干脆不出声），没有一个能出包。
 
 最后是 **DeepSeek-v4.1-Flash 1017** 把这几件事一起收掉的：先拿皮肤位图把每个窗口的坐标逐像素核对，再把播放链路整个重写成自研 DSP，才有了这版能在真机上跑通的构建。
 

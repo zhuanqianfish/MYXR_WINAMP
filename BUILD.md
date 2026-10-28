@@ -3,6 +3,9 @@
 源码在 `app-src/`，纯 framework API（无 androidx），可用 aapt2 + d8 + apksigner
 手工链路打包。环境变量以搭建好的工具链为准（见 `~/TOOLS.md`）。
 
+> **懒人版**：`./build.sh` 就是下面这套链路的一键脚本（自动找 SDK / JDK，
+> 处理 Windows 上 `d8.bat`、没有 `zip` 命令这些坑），改完代码直接跑它。
+
 ```bash
 export ANDROID_HOME=~/android-sdk
 export PATH=$ANDROID_HOME/build-tools/35.0.0:$ANDROID_HOME/platform-tools:$PATH
@@ -22,7 +25,7 @@ $AAPT2 compile --dir res -o build/compiled.zip
 $AAPT2 link -o build/app-unsigned.apk \
   --manifest AndroidManifest.xml \
   -I $ANDROID_JAR \
-  --version-code 12 --version-name 0.7 \
+  --version-code 13 --version-name 0.8 \
   -A assets \
   --java build/gen \
   build/compiled.zip
@@ -60,3 +63,21 @@ aapt2 dump badging WinampClassic.apk | head -5
 ```
 
 产物：`~/workspace/winamp-android/WinampClassic.apk`（debug 签名，可直接安装）。
+
+## Windows 上的三个额外坑（2026-10-29 实测）
+
+1. `d8` / `apksigner` 在 build-tools 里是 `.bat` 包装脚本，`zipalign` 是 `.exe`，
+   脚本里别硬写 `d8`，按文件是否存在挑后缀。
+2. Git Bash 默认没有 `zip` 命令。用 Python 重写 zip 补 `classes.dex`：
+   **必须重写整个包、并保持 `resources.arsc` 为 STORED**，不要用 `'a'` 追加模式
+   （追加出来的条目本地头不对，zipalign 会刷一屏 `header mismatch`）。
+3. 本机没有 Android Studio 自带的 JBR，JDK 装在 `F:\tools\jdk-17.0.20.1+1`
+   （Temurin 17，从清华镜像下的，Adoptium 官方源在国内只有 ~100KB/s）。
+
+## v0.8 新增的清单项
+
+- 权限：`FOREGROUND_SERVICE`、`FOREGROUND_SERVICE_MEDIA_PLAYBACK`、
+  `POST_NOTIFICATIONS`（Android 13+ 运行时授权）、`WAKE_LOCK`
+- 组件：`<service android:name=".PlaybackService" android:foregroundServiceType="mediaPlayback" />`
+- 图标：`res/drawable/ic_stat_winamp.xml` 与 `ic_media_{play,pause,prev,next}.xml`
+  （纯白矢量剪影，通知栏小图标必须是这个形态）
